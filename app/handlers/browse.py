@@ -223,7 +223,7 @@ async def browse_set_modes(call: CallbackQuery, state: FSMContext, session: Asyn
     await safe_answer(call)
 
 
-@router.message(BrowseFilterStates.modes)
+@router.message(BrowseFilterStates.modes, F.text, ~F.text.startswith("/"))
 async def browse_modes_search(message: Message, state: FSMContext, session: AsyncSession) -> None:
     user = await ensure_registered_message(message, session)
     if not user:

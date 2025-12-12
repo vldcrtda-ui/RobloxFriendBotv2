@@ -109,7 +109,7 @@ async def search_age(message: Message, state: FSMContext) -> None:
     await state.update_data(modes_msg_id=sent.message_id)
 
 
-@router.message(SearchStates.modes)
+@router.message(SearchStates.modes, F.text, ~F.text.startswith("/"))
 async def search_modes_search(message: Message, state: FSMContext) -> None:
     if not message.text:
         return

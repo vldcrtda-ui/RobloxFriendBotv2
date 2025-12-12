@@ -244,7 +244,7 @@ async def edit_modes(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     await safe_answer(call)
 
 
-@router.message(ProfileEditStates.modes)
+@router.message(ProfileEditStates.modes, F.text, ~F.text.startswith("/"))
 async def edit_modes_search(message: Message, state: FSMContext, session: AsyncSession) -> None:
     user = await ensure_registered_message(message, session)
     if not user:

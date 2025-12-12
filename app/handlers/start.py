@@ -124,7 +124,7 @@ async def reg_modes(call: CallbackQuery, state: FSMContext) -> None:
     await safe_answer(call)
 
 
-@router.message(RegistrationStates.modes)
+@router.message(RegistrationStates.modes, F.text, ~F.text.startswith("/"))
 async def reg_modes_search(message: Message, state: FSMContext) -> None:
     if not message.text:
         return
