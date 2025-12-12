@@ -226,13 +226,14 @@ async def broadcast_confirm(call: CallbackQuery, state: FSMContext, session: Asy
 async def games_cmd(message: Message) -> None:
     if not _is_admin(message.from_user.id):
         return
-    games = games_service.list()
-    if not games:
+    limit = 50
+    total = games_service.count()
+    games = games_service.list(limit=limit)
+    if not games or total == 0:
         await message.answer("Список игр пуст.")
         return
-    limit = 50
-    lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games[:limit]]
-    lines.append(f"\nПоказано: {min(limit, len(games))} из {len(games)}.")
+    lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games]
+    lines.append(f"\nПоказано: {len(games)} из {total}.")
     lines.append("\nДобавить: /games_add &lt;code&gt; &lt;name_ru&gt; | &lt;name_en&gt;")
     lines.append("Удалить: /games_remove &lt;code&gt;")
     await message.answer("\n".join(lines))

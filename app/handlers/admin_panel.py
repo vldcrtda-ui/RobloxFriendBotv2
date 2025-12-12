@@ -596,13 +596,14 @@ async def admin_report_detail(call: CallbackQuery, session: AsyncSession) -> Non
 async def admin_games(call: CallbackQuery, session: AsyncSession) -> None:
     if not _is_admin(call.from_user.id):
         return
-    games = games_service.list()
-    if not games:
+    limit = 50
+    total = games_service.count()
+    games = games_service.list(limit=limit)
+    if not games or total == 0:
         text = "Список игр пуст."
     else:
-        limit = 50
-        lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games[:limit]]
-        suffix = f"\n\nПоказано: {min(limit, len(games))} из {len(games)}."
+        lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games]
+        suffix = f"\n\nПоказано: {len(games)} из {total}."
         text = "Игры/режимы (топ по популярности):\n" + "\n".join(lines) + suffix
     lang = await _admin_lang(session, call.from_user.id)
     await call.message.answer(text, reply_markup=admin_games_kb(lang))
