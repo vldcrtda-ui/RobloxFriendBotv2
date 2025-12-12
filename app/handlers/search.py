@@ -101,12 +101,12 @@ async def search_age(message: Message, state: FSMContext) -> None:
         min_age, max_age = max_age, min_age
     min_age = max(8, min_age)
     max_age = min(99, max_age)
-    await state.update_data(min_age=min_age, max_age=max_age, modes=[], modes_query=None)
+    await state.update_data(min_age=min_age, max_age=max_age, modes=[], modes_query=None, modes_page=0)
     await state.set_state(SearchStates.modes)
     data = await state.get_data()
     lang = data.get("language") or "ru"
     sent = await message.answer(t(lang, "ask_modes"), reply_markup=modes_kb("search_mode", lang, []))
-    await state.update_data(modes_msg_id=sent.message_id)
+    await state.update_data(modes_msg_id=sent.message_id, modes_page=0)
 
 
 @router.message(SearchStates.modes, F.text, ~F.text.startswith("/"))
@@ -125,7 +125,7 @@ async def search_modes_search(message: Message, state: FSMContext) -> None:
     selected: list[str] = data.get("modes", [])
     prev_msg_id = data.get("modes_msg_id")
 
-    await state.update_data(modes_query=query or None)
+    await state.update_data(modes_query=query or None, modes_page=0)
 
     if prev_msg_id:
         try:
@@ -139,7 +139,7 @@ async def search_modes_search(message: Message, state: FSMContext) -> None:
 
     text = t(lang, "ask_modes")
     text += f"\n\n🔍 Поиск: <code>{html.escape(query)}</code>" if query else ""
-    sent = await message.answer(text, reply_markup=modes_kb("search_mode", lang, selected, query=query or None))
+    sent = await message.answer(text, reply_markup=modes_kb("search_mode", lang, selected, query=query or None, page=0))
     await state.update_data(modes_msg_id=sent.message_id)
 
 
@@ -150,10 +150,18 @@ async def search_modes(call: CallbackQuery, state: FSMContext) -> None:
     lang = data.get("language") or "ru"
     selected: list[str] = data.get("modes", [])
     query = data.get("modes_query")
+    page = int(data.get("modes_page") or 0)
 
     await state.update_data(modes_msg_id=call.message.message_id)
 
     if code == "__noop":
+        await safe_answer(call)
+        return
+
+    if code in {"__prev", "__next"}:
+        page = max(0, page - 1) if code == "__prev" else page + 1
+        await state.update_data(modes_page=page)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("search_mode", lang, selected, query=query, page=page))
         await safe_answer(call)
         return
 
@@ -165,8 +173,8 @@ async def search_modes(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     if code == "__clear":
-        await state.update_data(modes_query=None)
-        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("search_mode", lang, selected, query=None))
+        await state.update_data(modes_query=None, modes_page=0)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("search_mode", lang, selected, query=None, page=0))
         await safe_answer(call)
         return
 
@@ -192,7 +200,7 @@ async def search_modes(call: CallbackQuery, state: FSMContext) -> None:
             return
         selected.append(code)
     await state.update_data(modes=selected)
-    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("search_mode", lang, selected, query=query))
+    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("search_mode", lang, selected, query=query, page=page))
     await safe_answer(call)
 
 

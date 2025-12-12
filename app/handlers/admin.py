@@ -230,7 +230,9 @@ async def games_cmd(message: Message) -> None:
     if not games:
         await message.answer("Список игр пуст.")
         return
-    lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games]
+    limit = 50
+    lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games[:limit]]
+    lines.append(f"\nПоказано: {min(limit, len(games))} из {len(games)}.")
     lines.append("\nДобавить: /games_add &lt;code&gt; &lt;name_ru&gt; | &lt;name_en&gt;")
     lines.append("Удалить: /games_remove &lt;code&gt;")
     await message.answer("\n".join(lines))

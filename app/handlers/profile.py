@@ -95,12 +95,12 @@ async def profile_edit_cb(call: CallbackQuery, state: FSMContext, session: Async
         await call.message.answer(t(lang, "ask_lang"), reply_markup=language_kb("edit_lang", lang, selected=lang))
     elif field == "modes":
         await state.set_state(ProfileEditStates.modes)
-        await state.update_data(modes=list(user.modes), modes_query=None)
+        await state.update_data(modes=list(user.modes), modes_query=None, modes_page=0)
         sent = await call.message.answer(
             t(lang, "ask_modes"),
-            reply_markup=modes_kb("edit_mode", lang, list(user.modes)),
+            reply_markup=modes_kb("edit_mode", lang, list(user.modes), page=0),
         )
-        await state.update_data(modes_msg_id=sent.message_id)
+        await state.update_data(modes_msg_id=sent.message_id, modes_page=0)
     elif field == "bio":
         await state.set_state(ProfileEditStates.bio)
         await call.message.answer(t(lang, "ask_bio"))
@@ -201,10 +201,18 @@ async def edit_modes(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     code = call.data.split(":")[1]
     lang = user.language
     query = data.get("modes_query")
+    page = int(data.get("modes_page") or 0)
 
     await state.update_data(modes_msg_id=call.message.message_id)
 
     if code == "__noop":
+        await safe_answer(call)
+        return
+
+    if code in {"__prev", "__next"}:
+        page = max(0, page - 1) if code == "__prev" else page + 1
+        await state.update_data(modes_page=page)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("edit_mode", lang, selected, query=query, page=page))
         await safe_answer(call)
         return
 
@@ -216,8 +224,8 @@ async def edit_modes(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         return
 
     if code == "__clear":
-        await state.update_data(modes_query=None)
-        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("edit_mode", lang, selected, query=None))
+        await state.update_data(modes_query=None, modes_page=0)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("edit_mode", lang, selected, query=None, page=0))
         await safe_answer(call)
         return
 
@@ -240,7 +248,7 @@ async def edit_modes(call: CallbackQuery, state: FSMContext, session: AsyncSessi
             return
         selected.append(code)
     await state.update_data(modes=selected)
-    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("edit_mode", lang, selected, query=query))
+    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("edit_mode", lang, selected, query=query, page=page))
     await safe_answer(call)
 
 
@@ -262,7 +270,7 @@ async def edit_modes_search(message: Message, state: FSMContext, session: AsyncS
     selected: list[str] = data.get("modes", [])
     prev_msg_id = data.get("modes_msg_id")
 
-    await state.update_data(modes_query=query or None)
+    await state.update_data(modes_query=query or None, modes_page=0)
 
     if prev_msg_id:
         try:
@@ -278,7 +286,7 @@ async def edit_modes_search(message: Message, state: FSMContext, session: AsyncS
     text += f"\n\n🔍 Поиск: <code>{html.escape(query)}</code>" if query else ""
     sent = await message.answer(
         text,
-        reply_markup=modes_kb("edit_mode", user.language, selected, query=query or None),
+        reply_markup=modes_kb("edit_mode", user.language, selected, query=query or None, page=0),
     )
     await state.update_data(modes_msg_id=sent.message_id)
 

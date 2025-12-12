@@ -213,13 +213,13 @@ async def browse_set_modes(call: CallbackQuery, state: FSMContext, session: Asyn
     data = await state.get_data()
     filters = data.get("filters") or {}
     selected = filters.get("modes") or []
-    await state.update_data(filters=filters, modes_selected=selected, modes_query=None)
+    await state.update_data(filters=filters, modes_selected=selected, modes_query=None, modes_page=0)
     await state.set_state(BrowseFilterStates.modes)
     sent = await call.message.answer(
         "Выбери режимы:" if user.language == "ru" else "Choose modes:",
-        reply_markup=modes_kb("browse_mode", user.language, selected),
+        reply_markup=modes_kb("browse_mode", user.language, selected, page=0),
     )
-    await state.update_data(modes_msg_id=sent.message_id)
+    await state.update_data(modes_msg_id=sent.message_id, modes_page=0)
     await safe_answer(call)
 
 
@@ -241,7 +241,7 @@ async def browse_modes_search(message: Message, state: FSMContext, session: Asyn
     selected: list[str] = data.get("modes_selected") or []
     prev_msg_id = data.get("modes_msg_id")
 
-    await state.update_data(modes_query=query or None)
+    await state.update_data(modes_query=query or None, modes_page=0)
 
     if prev_msg_id:
         try:
@@ -257,7 +257,7 @@ async def browse_modes_search(message: Message, state: FSMContext, session: Asyn
     text += f"\n\n🔍 Поиск: <code>{html.escape(query)}</code>" if query else ""
     sent = await message.answer(
         text,
-        reply_markup=modes_kb("browse_mode", user.language, selected, query=query or None),
+        reply_markup=modes_kb("browse_mode", user.language, selected, query=query or None, page=0),
     )
     await state.update_data(modes_msg_id=sent.message_id)
 
@@ -272,10 +272,18 @@ async def browse_modes_pick(call: CallbackQuery, state: FSMContext, session: Asy
     filters = data.get("filters") or {}
     selected: list[str] = data.get("modes_selected") or []
     query = data.get("modes_query")
+    page = int(data.get("modes_page") or 0)
 
     await state.update_data(modes_msg_id=call.message.message_id)
 
     if code == "__noop":
+        await safe_answer(call)
+        return
+
+    if code in {"__prev", "__next"}:
+        page = max(0, page - 1) if code == "__prev" else page + 1
+        await state.update_data(modes_page=page)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected, query=query, page=page))
         await safe_answer(call)
         return
 
@@ -289,8 +297,8 @@ async def browse_modes_pick(call: CallbackQuery, state: FSMContext, session: Asy
         return
 
     if code == "__clear":
-        await state.update_data(modes_query=None)
-        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected, query=None))
+        await state.update_data(modes_query=None, modes_page=0)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected, query=None, page=0))
         await safe_answer(call)
         return
 
@@ -311,7 +319,7 @@ async def browse_modes_pick(call: CallbackQuery, state: FSMContext, session: Asy
         selected.append(code)
 
     await state.update_data(modes_selected=selected)
-    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected, query=query))
+    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected, query=query, page=page))
     await safe_answer(call)
 
 
