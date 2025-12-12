@@ -38,6 +38,8 @@ from app.utils.tg import safe_answer
 
 router = Router()
 
+CHATS_PAGE_SIZE = 10
+
 
 def _is_admin(user_id: int) -> bool:
     return user_id in settings.admin_id_set
@@ -106,8 +108,23 @@ async def admin_user_search(message: Message, state: FSMContext, session: AsyncS
     if not _is_admin(message.from_user.id):
         return
     query = (message.text or "").strip()
+    if query.startswith("@"):
+        query = query[1:].strip()
     repo = UserRepository(session)
-    target = await (repo.get(int(query)) if query.isdigit() else repo.get_by_nick(query))
+    if query.isdigit():
+        target = await repo.get(int(query))
+    else:
+        target = await repo.get_by_nick(query)
+        if not target:
+            matches = await repo.search_by_nick(query, limit=10)
+            if len(matches) == 1:
+                target = matches[0]
+            elif len(matches) > 1:
+                lines = ["Найдено несколько пользователей:"]
+                lines.extend([f"- {u.id}: {u.roblox_nick}" for u in matches])
+                lines.append("\nОтправьте ID или более точный ник.")
+                await message.answer("\n".join(lines))
+                return
     if not target:
         await message.answer("Не найден. Попробуй ещё раз или /admin.")
         return
@@ -276,27 +293,59 @@ async def admin_user_endchat(call: CallbackQuery, session: AsyncSession, bot) ->
     await safe_answer(call)
 
 
-@router.callback_query(F.data == "admin:chats")
-async def admin_chats(call: CallbackQuery, session: AsyncSession) -> None:
-    if not _is_admin(call.from_user.id):
-        return
-    chats = await ChatRepository(session).list_active()
+async def _send_chats_page(call: CallbackQuery, session: AsyncSession, offset: int) -> None:
+    offset = max(0, offset)
+    chats = await ChatRepository(session).list_recent(limit=CHATS_PAGE_SIZE + 1, offset=offset)
+    has_next = len(chats) > CHATS_PAGE_SIZE
+    chats = chats[:CHATS_PAGE_SIZE]
     if not chats:
-        await call.message.answer("Активных чатов нет.")
+        await call.message.answer("Больше чатов нет." if offset else "Чатов нет.")
         await safe_answer(call)
         return
+
     repo = UserRepository(session)
-    lines = []
-    kb_items: list[tuple[int, str]] = []
+    lines = ["Последние чаты (включая закрытые):"]
+    kb_items: list[tuple[int, bool]] = []
     for c in chats:
         u1 = await repo.get(c.user1_id)
         u2 = await repo.get(c.user2_id)
         label = f"{u1.roblox_nick if u1 else c.user1_id} ↔ {u2.roblox_nick if u2 else c.user2_id}"
-        lines.append(f"{c.id}: {label}")
-        kb_items.append((c.id, label))
+        status = "активный" if c.status == "active" else "закрыт"
+        lines.append(f"{c.id} ({status}): {label}")
+        kb_items.append((c.id, c.status == "active"))
+
     lang = await _admin_lang(session, call.from_user.id)
-    await call.message.answer("\n".join(lines), reply_markup=admin_chats_kb(kb_items, lang))
+    prev_offset = offset - CHATS_PAGE_SIZE if offset > 0 else None
+    next_offset = offset + CHATS_PAGE_SIZE if has_next else None
+    await call.message.answer(
+        "\n".join(lines),
+        reply_markup=admin_chats_kb(
+            kb_items,
+            lang,
+            prev_offset=prev_offset,
+            next_offset=next_offset,
+        ),
+    )
     await safe_answer(call)
+
+
+@router.callback_query(F.data == "admin:chats")
+async def admin_chats(call: CallbackQuery, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await _send_chats_page(call, session, offset=0)
+
+
+@router.callback_query(F.data.startswith("admin_chats_page:"))
+async def admin_chats_page(call: CallbackQuery, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    try:
+        offset = int(call.data.split(":")[1])
+    except (ValueError, IndexError):
+        await safe_answer(call)
+        return
+    await _send_chats_page(call, session, offset=offset)
 
 
 @router.callback_query(F.data.startswith("admin_chat_history:"))

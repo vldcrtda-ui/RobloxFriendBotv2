@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
@@ -16,8 +16,27 @@ class UserRepository:
         return await self.session.get(User, user_id)
 
     async def get_by_nick(self, nick: str) -> User | None:
-        stmt = select(User).where(User.roblox_nick == nick)
+        nick = (nick or "").strip()
+        if nick.startswith("@"):
+            nick = nick[1:].strip()
+        if not nick:
+            return None
+        stmt = select(User).where(func.lower(User.roblox_nick) == nick.lower())
         return await self.session.scalar(stmt)
+
+    async def search_by_nick(self, query: str, limit: int = 10) -> list[User]:
+        query = (query or "").strip()
+        if query.startswith("@"):
+            query = query[1:].strip()
+        if not query:
+            return []
+        stmt = (
+            select(User)
+            .where(User.roblox_nick.ilike(f"%{query}%"))
+            .order_by(User.roblox_nick.asc())
+            .limit(limit)
+        )
+        return list((await self.session.scalars(stmt)).all())
 
     async def is_nick_taken(self, nick: str) -> bool:
         return (await self.get_by_nick(nick)) is not None
@@ -81,4 +100,3 @@ class UserRepository:
                 | (User.last_reengage_sent_at < last_sent_before)
             )
         return list((await self.session.scalars(stmt)).all())
-

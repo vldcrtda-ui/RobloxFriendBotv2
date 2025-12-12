@@ -35,5 +35,9 @@ class ChatRepository:
         stmt = select(ChatSession).where(ChatSession.status == "active")
         return list((await self.session.scalars(stmt)).all())
 
+    async def list_recent(self, limit: int = 20, offset: int = 0) -> list[ChatSession]:
+        stmt = select(ChatSession).order_by(ChatSession.id.desc()).offset(offset).limit(limit)
+        return list((await self.session.scalars(stmt)).all())
+
     async def get(self, chat_id: int) -> ChatSession | None:
         return await self.session.get(ChatSession, chat_id)

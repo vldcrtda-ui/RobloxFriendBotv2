@@ -130,6 +130,35 @@ async def active_chats_cmd(message: Message, session: AsyncSession) -> None:
     await message.answer("\n".join(lines))
 
 
+@router.message(Command("chats"))
+async def chats_cmd(message: Message, session: AsyncSession) -> None:
+    if not _is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    limit = 20
+    if len(parts) > 1:
+        if not parts[1].isdigit():
+            await message.answer("Использование: /chats [limit]")
+            return
+        limit = max(1, min(100, int(parts[1])))
+
+    chats = await ChatRepository(session).list_recent(limit=limit)
+    if not chats:
+        await message.answer("Чатов нет.")
+        return
+
+    repo = UserRepository(session)
+    lines = []
+    for c in chats:
+        u1 = await repo.get(c.user1_id)
+        u2 = await repo.get(c.user2_id)
+        status = "active" if c.status == "active" else "closed"
+        lines.append(
+            f"{c.id} ({status}): {u1.roblox_nick if u1 else c.user1_id} ↔ {u2.roblox_nick if u2 else c.user2_id}"
+        )
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("chat_history"))
 async def chat_history_cmd(message: Message, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
