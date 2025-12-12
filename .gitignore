@@ -1,6 +1,7 @@
 .env
 data/bot.db
-data/*.mdbx*
+data/games.json
+data/*.mdbx-lck
 bot.log
 bot.err.log
 __pycache__/

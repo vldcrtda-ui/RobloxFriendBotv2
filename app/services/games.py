@@ -61,7 +61,7 @@ _RU_TO_LAT = {
     "я": "ya",
 }
 
-MDBX_SCHEMA_VERSION = 1
+MDBX_SCHEMA_VERSION = 2
 MDBX_MAP_META = b"meta"
 MDBX_MAP_GAMES = b"games"
 MDBX_MAP_ORDER = b"order"  # rank(u32be) -> code(bytes)
@@ -184,11 +184,9 @@ def _iter_tokens_for_game(game: dict) -> set[str]:
 
 
 class GamesService:
-    def __init__(self, json_path: str = "data/games.json", mdbx_path: str = "data/games.mdbx"):
-        self.json_path = Path(json_path)
+    def __init__(self, mdbx_path: str = "data/games.mdbx"):
         self.mdbx_path = Path(mdbx_path)
 
-        self._backend: str = "json"
         self._env: Env | None = None
         self._meta = None
         self._games = None
@@ -198,38 +196,22 @@ class GamesService:
 
         self._count: int = 0
         self._cache_by_code: dict[str, dict] = {}
-        self._json_games: list[dict] = []
-        self._json_index: dict[str, dict] = {}
 
         self.load()
 
     def load(self) -> None:
-        if _HAS_MDBX:
-            try:
-                self._load_mdbx()
-                return
-            except Exception:
-                self._close_mdbx()
-        self._load_json()
-
-    def _load_json(self) -> None:
-        self._backend = "json"
-        self._json_games = []
-        self._json_index = {}
+        if not _HAS_MDBX or Env is None:
+            raise RuntimeError("libmdbx is not available")
         self._cache_by_code = {}
-        try:
-            raw = json.loads(self.json_path.read_text(encoding="utf-8"))
-            if isinstance(raw, list):
-                self._json_games = [_ensure_game_fields(g) for g in raw if isinstance(g, dict)]
-        except Exception:
-            self._json_games = []
 
-        self._json_index = {g["code"]: g for g in self._json_games if g.get("code")}
-        self._count = len(self._json_games)
+        if self._env is None:
+            self._open_mdbx()
+        self._open_maps()
+        self._ensure_schema()
+        self._count = self._read_count()
 
     def _open_mdbx(self) -> None:
-        if not _HAS_MDBX or Env is None or MDBXEnvFlags is None:
-            raise RuntimeError("libmdbx is not available")
+        assert Env is not None and MDBXEnvFlags is not None
         self.mdbx_path.parent.mkdir(parents=True, exist_ok=True)
         flags = MDBXEnvFlags.MDBX_ENV_DEFAULTS | MDBXEnvFlags.MDBX_NOSUBDIR
         self._env = Env(
@@ -249,8 +231,7 @@ class GamesService:
         self._meta = self._games = self._order = self._rank = self._token = None
 
     def _open_maps(self) -> None:
-        if not self._env or MDBXDBFlags is None:
-            raise RuntimeError("MDBX env not opened")
+        assert self._env is not None and MDBXDBFlags is not None
         with self._env.rw_transaction() as txn:
             self._meta = txn.open_map(MDBX_MAP_META, MDBXDBFlags.MDBX_CREATE)
             self._games = txn.open_map(MDBX_MAP_GAMES, MDBXDBFlags.MDBX_CREATE)
@@ -262,54 +243,77 @@ class GamesService:
             )
             txn.commit()
 
-    def _mdbx_meta_get(self, key: bytes) -> bytes | None:
+    def _meta_get(self, key: bytes) -> bytes | None:
         if not self._env or not self._meta:
             return None
         with self._env.ro_transaction() as txn:
             return self._meta.get(txn, key)
 
-    def _mdbx_meta_set(self, txn, key: bytes, value: bytes) -> None:
-        assert self._meta
+    def _meta_set(self, txn, key: bytes, value: bytes) -> None:
+        assert self._meta is not None and MDBXPutFlags is not None
         self._meta.put(txn, key, value, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
 
-    def _mdbx_needs_rebuild(self) -> bool:
-        if not self.json_path.exists():
-            return False
+    def _ensure_schema(self) -> None:
+        if not self._env or not self._meta:
+            return
+        schema_raw = self._meta_get(b"schema")
+        if schema_raw == str(MDBX_SCHEMA_VERSION).encode("utf-8"):
+            return
+
+        games = self._read_all_games_in_order()
+        self.rebuild(games)
+
+    def _read_count(self) -> int:
+        raw = self._meta_get(b"count") or b"0"
         try:
-            st = self.json_path.stat()
+            return int(raw.decode("utf-8"))
         except Exception:
-            return False
+            return self._count_entries()
 
-        schema_raw = self._mdbx_meta_get(b"schema")
-        mtime_raw = self._mdbx_meta_get(b"json_mtime_ns")
-        size_raw = self._mdbx_meta_get(b"json_size")
+    def _count_entries(self) -> int:
+        if not self._env or not self._order:
+            return 0
+        total = 0
+        with self._env.ro_transaction() as txn:
+            with Cursor(self._order, txn) as cur:  # type: ignore[arg-type]
+                k, v = cur.get_full(_u32be(0), MDBXCursorOp.MDBX_SET_RANGE)  # type: ignore[arg-type]
+                while v is not None:
+                    total += 1
+                    k, v = cur.get_full(None, MDBXCursorOp.MDBX_NEXT)  # type: ignore[arg-type]
+        return total
 
-        if not schema_raw or schema_raw != str(MDBX_SCHEMA_VERSION).encode("utf-8"):
-            return True
-        if not mtime_raw or not size_raw:
-            return True
-
+    def _fetch_game_from_mdbx(self, txn, code_b: bytes) -> dict | None:
+        assert self._games is not None
+        raw = self._games.get(txn, code_b)
+        if not raw:
+            return None
         try:
-            mtime_ns = int(mtime_raw.decode("utf-8"))
-            size = int(size_raw.decode("utf-8"))
+            obj = json.loads(raw.decode("utf-8"))
+            if isinstance(obj, dict):
+                return _ensure_game_fields(obj)
         except Exception:
-            return True
+            return None
+        return None
 
-        return mtime_ns != int(st.st_mtime_ns) or size != int(st.st_size)
+    def _read_all_games_in_order(self) -> list[dict]:
+        if not self._env or not self._order or not self._games:
+            return []
+        out: list[dict] = []
+        with self._env.ro_transaction() as txn:
+            with Cursor(self._order, txn) as cur:  # type: ignore[arg-type]
+                k, v = cur.get_full(_u32be(0), MDBXCursorOp.MDBX_SET_RANGE)  # type: ignore[arg-type]
+                while v is not None:
+                    game = self._fetch_game_from_mdbx(txn, v)
+                    if game is not None:
+                        out.append(game)
+                    k, v = cur.get_full(None, MDBXCursorOp.MDBX_NEXT)  # type: ignore[arg-type]
+        return out
 
-    def _mdbx_rebuild_from_json(self) -> None:
+    def rebuild(self, games: list[dict]) -> None:
         if not self._env or not self._meta or not self._games or not self._order or not self._rank or not self._token:
             raise RuntimeError("MDBX is not initialized")
-        if not self.json_path.exists():
-            raise RuntimeError("JSON source not found")
 
-        raw = json.loads(self.json_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            raw = []
-        games: list[dict] = [_ensure_game_fields(g) for g in raw if isinstance(g, dict)]
-
-        st = self.json_path.stat()
-
+        normalized = [_ensure_game_fields(g) for g in games if isinstance(g, dict)]
         with self._env.rw_transaction() as txn:
             self._games.drop(txn, delete=False)
             self._order.drop(txn, delete=False)
@@ -317,7 +321,7 @@ class GamesService:
             self._token.drop(txn, delete=False)
             self._meta.drop(txn, delete=False)
 
-            for rank, game in enumerate(games):
+            for rank, game in enumerate(normalized):
                 code = str(game.get("code") or "")
                 if not code:
                     continue
@@ -331,49 +335,14 @@ class GamesService:
 
                 for token in _iter_tokens_for_game(game):
                     token_b = token.encode("utf-8")
-                    val_b = rank_b + code_b
-                    self._token.put(txn, token_b, val_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
+                    self._token.put(txn, token_b, rank_b + code_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
 
-            self._mdbx_meta_set(txn, b"schema", str(MDBX_SCHEMA_VERSION).encode("utf-8"))
-            self._mdbx_meta_set(txn, b"json_mtime_ns", str(int(st.st_mtime_ns)).encode("utf-8"))
-            self._mdbx_meta_set(txn, b"json_size", str(int(st.st_size)).encode("utf-8"))
-            self._mdbx_meta_set(txn, b"count", str(len(games)).encode("utf-8"))
+            self._meta_set(txn, b"schema", str(MDBX_SCHEMA_VERSION).encode("utf-8"))
+            self._meta_set(txn, b"count", str(len(normalized)).encode("utf-8"))
             txn.commit()
 
         self._cache_by_code = {}
-        self._count = len(games)
-
-    def _load_mdbx(self) -> None:
-        self._backend = "mdbx"
-        self._cache_by_code = {}
-        self._json_games = []
-        self._json_index = {}
-
-        if self._env is None:
-            self._open_mdbx()
-        self._open_maps()
-
-        if self._mdbx_needs_rebuild():
-            self._mdbx_rebuild_from_json()
-
-        count_raw = self._mdbx_meta_get(b"count") or b"0"
-        try:
-            self._count = int(count_raw.decode("utf-8"))
-        except Exception:
-            self._count = 0
-
-    def _fetch_game_from_mdbx(self, txn, code_b: bytes) -> dict | None:
-        assert self._games
-        raw = self._games.get(txn, code_b)
-        if not raw:
-            return None
-        try:
-            obj = json.loads(raw.decode("utf-8"))
-            if isinstance(obj, dict):
-                return _ensure_game_fields(obj)
-        except Exception:
-            return None
-        return None
+        self._count = len(normalized)
 
     def count(self) -> int:
         return int(self._count)
@@ -382,11 +351,6 @@ class GamesService:
         offset = max(0, int(offset or 0))
         if limit is not None:
             limit = max(0, int(limit))
-
-        if self._backend != "mdbx":
-            games = self._json_games
-            chunk = games[offset:] if limit is None else games[offset : offset + limit]
-            return list(chunk)
 
         if not self._env or not self._order:
             return []
@@ -397,8 +361,7 @@ class GamesService:
         with self._env.ro_transaction() as txn:
             assert self._games is not None
             with Cursor(self._order, txn) as cur:  # type: ignore[arg-type]
-                start_key = _u32be(offset)
-                k, v = cur.get_full(start_key, MDBXCursorOp.MDBX_SET_RANGE)  # type: ignore[arg-type]
+                k, v = cur.get_full(_u32be(offset), MDBXCursorOp.MDBX_SET_RANGE)  # type: ignore[arg-type]
                 while v is not None and (limit is None or len(out) < limit):
                     game = self._fetch_game_from_mdbx(txn, v)
                     if game is not None:
@@ -407,19 +370,13 @@ class GamesService:
         return out
 
     def get(self, code: str) -> dict | None:
-        code = str(code or "")
+        code = str(code or "").strip()
         if not code:
             return None
+
         cached = self._cache_by_code.get(code)
         if cached is not None:
             return dict(cached)
-
-        if self._backend != "mdbx":
-            g = self._json_index.get(code)
-            if g is None:
-                return None
-            self._cache_by_code[code] = dict(g)
-            return dict(g)
 
         if not self._env or not self._games:
             return None
@@ -435,83 +392,48 @@ class GamesService:
         game = self.get(code)
         if not game:
             return code
-        return game.get("name_en") if lang == "en" else game.get("name_ru")
+        return str(game.get("name_en") if lang == "en" else game.get("name_ru"))
 
     def labels(self, codes: list[str], lang: str) -> list[str]:
         return [self.label(c, lang) for c in codes]
-
-    def _write_json(self, games: list[dict]) -> None:
-        self.json_path.parent.mkdir(parents=True, exist_ok=True)
-        self.json_path.write_text(json.dumps(games, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def add(self, code: str, name_ru: str, name_en: str) -> None:
         code = str(code or "").strip()
         if not code or self.get(code):
             return
 
-        try:
-            raw = json.loads(self.json_path.read_text(encoding="utf-8"))
-        except Exception:
-            raw = []
-        if not isinstance(raw, list):
-            raw = []
-        raw.append({"code": code, "name_ru": name_ru, "name_en": name_en, "playerCount": 0})
-        games = [_ensure_game_fields(g) for g in raw if isinstance(g, dict)]
-        self._write_json(games)
+        if not self._env or not self._meta or not self._games or not self._order or not self._rank or not self._token:
+            raise RuntimeError("MDBX is not initialized")
 
-        if self._backend == "mdbx" and self._env and self._games and self._order and self._rank and self._token and self._meta:
-            rank = int(self._count)
-            code_b = code.encode("utf-8")
-            rank_b = _u32be(rank)
-            game = {"code": code, "name_ru": name_ru, "name_en": name_en, "playerCount": 0}
-            game_json = json.dumps(_ensure_game_fields(game), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            st = self.json_path.stat()
-            with self._env.rw_transaction() as txn:
-                self._games.put(txn, code_b, game_json, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
-                self._order.put(txn, rank_b, code_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
-                self._rank.put(txn, code_b, rank_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
-                for token in _iter_tokens_for_game(game):
-                    token_b = token.encode("utf-8")
-                    self._token.put(txn, token_b, rank_b + code_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
-                self._mdbx_meta_set(txn, b"schema", str(MDBX_SCHEMA_VERSION).encode("utf-8"))
-                self._mdbx_meta_set(txn, b"json_mtime_ns", str(int(st.st_mtime_ns)).encode("utf-8"))
-                self._mdbx_meta_set(txn, b"json_size", str(int(st.st_size)).encode("utf-8"))
-                self._mdbx_meta_set(txn, b"count", str(len(games)).encode("utf-8"))
-                txn.commit()
+        rank = int(self._count)
+        code_b = code.encode("utf-8")
+        rank_b = _u32be(rank)
+        game = _ensure_game_fields({"code": code, "name_ru": name_ru, "name_en": name_en, "playerCount": 0})
+        game_json = json.dumps(game, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
-        self._count = len(games)
-        self._cache_by_code[code] = {"code": code, "name_ru": name_ru, "name_en": name_en, "playerCount": 0}
-        if self._backend != "mdbx":
-            self._json_games = games
-            self._json_index = {g["code"]: g for g in self._json_games if g.get("code")}
+        with self._env.rw_transaction() as txn:
+            self._games.put(txn, code_b, game_json, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
+            self._order.put(txn, rank_b, code_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
+            self._rank.put(txn, code_b, rank_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
+            for token in _iter_tokens_for_game(game):
+                self._token.put(txn, token.encode("utf-8"), rank_b + code_b, flags=MDBXPutFlags.MDBX_UPSERT)  # type: ignore[arg-type]
+            self._meta_set(txn, b"schema", str(MDBX_SCHEMA_VERSION).encode("utf-8"))
+            self._meta_set(txn, b"count", str(rank + 1).encode("utf-8"))
+            txn.commit()
+
+        self._count = rank + 1
+        self._cache_by_code[code] = dict(game)
 
     def remove(self, code: str) -> bool:
         code = str(code or "").strip()
         if not code:
             return False
-
-        try:
-            raw = json.loads(self.json_path.read_text(encoding="utf-8"))
-        except Exception:
-            raw = []
-        if not isinstance(raw, list):
-            raw = []
-        before = len(raw)
-        raw = [g for g in raw if not (isinstance(g, dict) and str(g.get("code") or "") == code)]
-        if len(raw) == before:
+        if self.get(code) is None:
             return False
 
-        games = [_ensure_game_fields(g) for g in raw if isinstance(g, dict)]
-        self._write_json(games)
-
-        if self._backend == "mdbx" and self._env:
-            self._mdbx_rebuild_from_json()
-        else:
-            self._json_games = games
-            self._json_index = {g["code"]: g for g in self._json_games if g.get("code")}
-            self._count = len(games)
-            self._cache_by_code.pop(code, None)
-
+        games = [g for g in self.list() if str(g.get("code") or "") != code]
+        self.rebuild(games)
+        self._cache_by_code.pop(code, None)
         return True
 
     def page(self, page: int, page_size: int, exclude_codes: set[str] | None = None) -> tuple[list[dict], int]:
@@ -527,22 +449,6 @@ class GamesService:
         if offset >= total:
             page = max(0, (total - 1) // page_size)
             offset = page * page_size
-
-        if self._backend != "mdbx":
-            out = []
-            index = 0
-            for g in self._json_games:
-                code = str(g.get("code") or "")
-                if code in exclude_codes:
-                    continue
-                if index < offset:
-                    index += 1
-                    continue
-                out.append(g)
-                if len(out) >= page_size:
-                    break
-                index += 1
-            return list(out), total
 
         if not self._env or not self._order or not self._rank:
             return [], total
@@ -571,12 +477,11 @@ class GamesService:
 
         out: list[dict] = []
         with self._env.ro_transaction() as txn:
-            assert self._games is not None
             with Cursor(self._order, txn) as cur:  # type: ignore[arg-type]
                 k, v = cur.get_full(_u32be(start_rank), MDBXCursorOp.MDBX_SET_RANGE)  # type: ignore[arg-type]
                 while v is not None and len(out) < page_size:
-                    code = v.decode("utf-8", errors="ignore")
-                    if code not in exclude_codes:
+                    code_s = v.decode("utf-8", errors="ignore")
+                    if code_s and code_s not in exclude_codes:
                         game = self._fetch_game_from_mdbx(txn, v)
                         if game is not None:
                             out.append(game)
@@ -596,28 +501,6 @@ class GamesService:
             tokens.update(v.split())
         index_keys = sorted({t for t in tokens if len(t) >= 3})
 
-        scored: list[tuple[float, int, dict]] = []
-
-        if self._backend != "mdbx":
-            for g in self._json_games:
-                code = str(g.get("code") or "")
-                if code in exclude_codes:
-                    continue
-                score = _game_match_score(g, variants)
-                if score < 0.55:
-                    continue
-                pop = int(g.get("playerCount") or 0)
-                scored.append((score, pop, g))
-
-            scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-            total = len(scored)
-            if total == 0:
-                return [], 0
-            max_page = max(0, (total - 1) // page_size)
-            page = max(0, min(page, max_page))
-            start = page * page_size
-            return [g for _, _, g in scored[start : start + page_size]], total
-
         if not self._env or not self._games or not self._order or not self._token:
             return [], 0
 
@@ -636,11 +519,11 @@ class GamesService:
                             if len(v) >= 5:
                                 rank = _u32be_to_int(v[:4])
                                 code_b = v[4:]
-                                code = code_b.decode("utf-8", errors="ignore")
-                                if code and code not in exclude_codes and rank is not None:
-                                    prev = candidates.get(code)
+                                code_s = code_b.decode("utf-8", errors="ignore")
+                                if code_s and code_s not in exclude_codes and rank is not None:
+                                    prev = candidates.get(code_s)
                                     if prev is None or rank < prev:
-                                        candidates[code] = rank
+                                        candidates[code_s] = rank
                             if len(candidates) >= max_candidates:
                                 break
                             k2, v2 = cur.get_full(None, MDBXCursorOp.MDBX_NEXT_DUP)  # type: ignore[arg-type]
@@ -655,16 +538,16 @@ class GamesService:
                 with Cursor(self._order, txn) as cur:  # type: ignore[arg-type]
                     k, v = cur.get_full(_u32be(0), MDBXCursorOp.MDBX_SET_RANGE)  # type: ignore[arg-type]
                     while v is not None and len(candidates) < take:
-                        code = v.decode("utf-8", errors="ignore")
-                        if code and code not in exclude_codes:
+                        code_s = v.decode("utf-8", errors="ignore")
+                        if code_s and code_s not in exclude_codes:
                             rank = _u32be_to_int(k)
                             if rank is not None:
-                                candidates[code] = rank
+                                candidates[code_s] = rank
                         k, v = cur.get_full(None, MDBXCursorOp.MDBX_NEXT)  # type: ignore[arg-type]
 
-            for code, _rank in candidates.items():
-                code_b = code.encode("utf-8")
-                game = self._fetch_game_from_mdbx(txn, code_b)
+            scored: list[tuple[float, int, dict]] = []
+            for code_s, _rank in candidates.items():
+                game = self._fetch_game_from_mdbx(txn, code_s.encode("utf-8"))
                 if game is None:
                     continue
                 score = _game_match_score(game, variants)
@@ -684,3 +567,4 @@ class GamesService:
 
 
 games_service = GamesService()
+
