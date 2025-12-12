@@ -58,7 +58,7 @@ class OfferService:
             if user:
                 user.active_offer_id = None
                 if user.state == "matching":
-                    user.state = "searching"
+                    user.state = "idle"
 
         if offer.search1_id:
             await search_repo.set_status(offer.search1_id, "declined")
@@ -92,7 +92,7 @@ class OfferService:
             if user:
                 user.active_offer_id = None
                 if user.state == "matching":
-                    user.state = "searching"
+                    user.state = "idle"
 
         await session.flush()
         return target_id

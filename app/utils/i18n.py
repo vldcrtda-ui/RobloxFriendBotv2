@@ -25,6 +25,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "help": "Команды: /browse /search /chat /profile /blocklist /exit_chat /cancel /help",
         "skip": "Пропустить",
         "cancel": "Отменить",
+        "offer_declined": "Запрос отклонён.",
+        "offer_declined_by_other": "Ваш запрос отклонили.",
     },
     "en": {
         "welcome_new": "Hi! Let's set up your Roblox profile.",
@@ -50,6 +52,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "help": "Commands: /browse /search /chat /profile /blocklist /exit_chat /cancel /help",
         "skip": "Skip",
         "cancel": "Cancel",
+        "offer_declined": "Request declined.",
+        "offer_declined_by_other": "Your request was declined.",
     },
 }
 
@@ -58,4 +62,3 @@ def t(lang: str | None, key: str, **kwargs) -> str:
     lang = lang or "ru"
     template = TEXTS.get(lang, TEXTS["ru"]).get(key, key)
     return template.format(**kwargs)
-

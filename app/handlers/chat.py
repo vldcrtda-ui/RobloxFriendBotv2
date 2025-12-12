@@ -22,7 +22,7 @@ from app.utils.cards import format_profile
 from app.utils.guards import ensure_registered_call, ensure_registered_message
 from app.utils.i18n import t
 from app.utils.states import RandomChatStates
-from app.utils.tg import safe_answer
+from app.utils.tg import safe_answer, safe_edit_reply_markup
 
 router = Router()
 
@@ -238,12 +238,37 @@ async def offer_skip_cb(call: CallbackQuery, session: AsyncSession, bot) -> None
     if not user:
         return
     offer_id = int(call.data.split(":")[1])
+    offer_before = await OfferRepository(session).get(offer_id)
+    if not offer_before or offer_before.status in {"declined", "blocked", "active"}:
+        await safe_answer(call)
+        return
+
+    from_search = bool(offer_before.search1_id or offer_before.search2_id)
+    notify_id: int | None = None
+    if offer_before.status == "offered1" and user.id == offer_before.user2_id:
+        notify_id = offer_before.user1_id
+    elif offer_before.status == "offered2" and user.id == offer_before.user1_id:
+        notify_id = offer_before.user2_id
+
     await offer_service.decline(session, offer_id, user.id)
     await session.commit()
 
     offer = await OfferRepository(session).get(offer_id)
     if not offer:
         await safe_answer(call)
+        return
+
+    if notify_id:
+        notify_user = await UserRepository(session).get(notify_id)
+        lang = notify_user.language if notify_user else "ru"
+        try:
+            await bot.send_message(notify_id, t(lang, "offer_declined_by_other"))
+        except Exception:
+            pass
+
+    if not from_search:
+        await safe_edit_reply_markup(call.message, reply_markup=None)
+        await safe_answer(call, t(user.language, "offer_declined"))
         return
 
     for uid in (offer.user1_id, offer.user2_id):
