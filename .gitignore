@@ -1,5 +1,7 @@
 .env
 data/bot.db
+bot.log
+bot.err.log
 __pycache__/
 *.pyc
 .venv/
@@ -7,4 +9,3 @@ __pycache__/
 .mypy_cache/
 .idea/
 .vscode/
-

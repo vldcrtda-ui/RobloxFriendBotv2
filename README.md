@@ -14,7 +14,7 @@
    docker compose up --build
    ```
 
-База данных по умолчанию — SQLite в `data/bot.db` (монтируется volume).
+База данных по умолчанию — Postgres (контейнер `db`, данные в volume `pgdata`).
 
 ## Локальный запуск (без Docker)
 
@@ -23,6 +23,7 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 set BOT_TOKEN=...
+set DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/robloxbot
 python -m app.main
 ```
 
@@ -30,12 +31,12 @@ python -m app.main
 
 Пользовательские: `/start`, `/browse`, `/search`, `/chat`, `/profile`, `/blocklist`, `/exit_chat`, `/cancel`, `/help`.
 
-Админские (IDs из `ADMIN_IDS`): `/admin` (inline‑панель), `/metrics`, `/ban`, `/unban`, `/broadcast`, `/games`, `/active_chats`, `/chat_history`, `/banstatus`.
+Админские (IDs из `ADMIN_IDS`): `/admin` (inline‑панель), `/metrics`, `/ban`, `/unban`, `/broadcast`, `/games`, `/active_chats`, `/chats`, `/chat_history`, `/banstatus`.
 
 В админ‑панели доступны кнопки для:
 - просмотра метрик;
 - поиска пользователя по ID/нику и действий: бан/разбан/удаление/завершение чата;
-- списка активных чатов, истории и закрытия;
+- списка чатов (включая закрытые), истории и закрытия;
 - просмотра жалоб и перехода к модерации пользователя;
 - управления играми (добавить/удалить/перезагрузить JSON);
 - рассылки;

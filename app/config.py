@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str
-    database_url: str = "sqlite+aiosqlite:///./data/bot.db"
+    database_url: str = "postgresql+asyncpg://robloxbot:robloxbot@db:5432/robloxbot"
     admin_ids: str = ""
     main_admin_id: int | None = None
     reengage_after_hours: int = 72
@@ -30,4 +30,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
