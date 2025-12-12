@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.keyboards.admin_panel import (
     admin_back_kb,
+    admin_bans_kb,
     admin_chats_kb,
     admin_games_kb,
     admin_main_kb,
@@ -39,6 +40,7 @@ from app.utils.tg import safe_answer
 router = Router()
 
 CHATS_PAGE_SIZE = 10
+BANS_PAGE_SIZE = 10
 
 
 def _is_admin(user_id: int) -> bool:
@@ -145,6 +147,38 @@ async def admin_user_search(message: Message, state: FSMContext, session: AsyncS
         text,
         reply_markup=admin_users_actions_kb(target.id, target.is_banned, has_chat, lang),
     )
+
+
+@router.callback_query(F.data.startswith("admin_user_view:"))
+async def admin_user_view(call: CallbackQuery, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    try:
+        target_id = int(call.data.split(":")[1])
+    except (ValueError, IndexError):
+        await safe_answer(call)
+        return
+    target = await UserRepository(session).get(target_id)
+    if not target:
+        await safe_answer(call)
+        return
+
+    lang = await _admin_lang(session, call.from_user.id)
+    text = format_profile(target, lang, show_id=True)
+    text += f"\nСостояние: <code>{target.state}</code>"
+    text += f"\nПоследняя активность: {target.last_active_at:%Y-%m-%d %H:%M} UTC"
+    if target.is_banned:
+        until = target.ban_until.strftime("%Y-%m-%d %H:%M") + " UTC" if target.ban_until else "∞"
+        text += f"\nБан до: {until}"
+        if target.ban_reason:
+            text += f"\nПричина: {target.ban_reason}"
+
+    has_chat = target.active_chat_id is not None
+    await call.message.answer(
+        text,
+        reply_markup=admin_users_actions_kb(target.id, target.is_banned, has_chat, lang),
+    )
+    await safe_answer(call)
 
 
 @router.callback_query(F.data.startswith("admin_user_ban:"))
@@ -293,6 +327,63 @@ async def admin_user_endchat(call: CallbackQuery, session: AsyncSession, bot) ->
     await safe_answer(call)
 
 
+async def _send_bans_page(call: CallbackQuery, session: AsyncSession, offset: int) -> None:
+    offset = max(0, offset)
+    stmt = (
+        select(User)
+        .where(User.is_banned.is_(True))
+        .order_by(User.id.desc())
+        .offset(offset)
+        .limit(BANS_PAGE_SIZE + 1)
+    )
+    banned = list((await session.scalars(stmt)).all())
+    has_next = len(banned) > BANS_PAGE_SIZE
+    banned = banned[:BANS_PAGE_SIZE]
+    if not banned:
+        await call.message.answer("Банов нет." if offset == 0 else "Больше банов нет.")
+        await safe_answer(call)
+        return
+
+    lines = ["Бан-лист:"]
+    for u in banned:
+        until = u.ban_until.strftime("%Y-%m-%d %H:%M") + " UTC" if u.ban_until else "∞"
+        nick = u.roblox_nick or "-"
+        lines.append(f"- {u.id}: {nick} до {until}")
+
+    lang = await _admin_lang(session, call.from_user.id)
+    prev_offset = offset - BANS_PAGE_SIZE if offset > 0 else None
+    next_offset = offset + BANS_PAGE_SIZE if has_next else None
+    await call.message.answer(
+        "\n".join(lines),
+        reply_markup=admin_bans_kb(
+            [u.id for u in banned],
+            lang,
+            prev_offset=prev_offset,
+            next_offset=next_offset,
+        ),
+    )
+    await safe_answer(call)
+
+
+@router.callback_query(F.data == "admin:bans")
+async def admin_bans(call: CallbackQuery, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await _send_bans_page(call, session, offset=0)
+
+
+@router.callback_query(F.data.startswith("admin_bans_page:"))
+async def admin_bans_page(call: CallbackQuery, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    try:
+        offset = int(call.data.split(":")[1])
+    except (ValueError, IndexError):
+        await safe_answer(call)
+        return
+    await _send_bans_page(call, session, offset=offset)
+
+
 async def _send_chats_page(call: CallbackQuery, session: AsyncSession, offset: int) -> None:
     offset = max(0, offset)
     chats = await ChatRepository(session).list_recent(limit=CHATS_PAGE_SIZE + 1, offset=offset)
@@ -327,6 +418,67 @@ async def _send_chats_page(call: CallbackQuery, session: AsyncSession, offset: i
         ),
     )
     await safe_answer(call)
+
+
+async def _send_active_chats_page(call: CallbackQuery, session: AsyncSession, offset: int) -> None:
+    offset = max(0, offset)
+    chats = await ChatRepository(session).list_recent(
+        limit=CHATS_PAGE_SIZE + 1,
+        offset=offset,
+        status="active",
+    )
+    has_next = len(chats) > CHATS_PAGE_SIZE
+    chats = chats[:CHATS_PAGE_SIZE]
+    if not chats:
+        await call.message.answer(
+            "Активных чатов нет." if offset == 0 else "Больше активных чатов нет."
+        )
+        await safe_answer(call)
+        return
+
+    repo = UserRepository(session)
+    lines = ["Активные чаты:"]
+    kb_items: list[tuple[int, bool]] = []
+    for c in chats:
+        u1 = await repo.get(c.user1_id)
+        u2 = await repo.get(c.user2_id)
+        label = f"{u1.roblox_nick if u1 else c.user1_id} ↔ {u2.roblox_nick if u2 else c.user2_id}"
+        lines.append(f"{c.id}: {label}")
+        kb_items.append((c.id, True))
+
+    lang = await _admin_lang(session, call.from_user.id)
+    prev_offset = offset - CHATS_PAGE_SIZE if offset > 0 else None
+    next_offset = offset + CHATS_PAGE_SIZE if has_next else None
+    await call.message.answer(
+        "\n".join(lines),
+        reply_markup=admin_chats_kb(
+            kb_items,
+            lang,
+            prev_offset=prev_offset,
+            next_offset=next_offset,
+            page_callback_prefix="admin_active_chats_page",
+        ),
+    )
+    await safe_answer(call)
+
+
+@router.callback_query(F.data == "admin:active_chats")
+async def admin_active_chats(call: CallbackQuery, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    await _send_active_chats_page(call, session, offset=0)
+
+
+@router.callback_query(F.data.startswith("admin_active_chats_page:"))
+async def admin_active_chats_page(call: CallbackQuery, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        return
+    try:
+        offset = int(call.data.split(":")[1])
+    except (ValueError, IndexError):
+        await safe_answer(call)
+        return
+    await _send_active_chats_page(call, session, offset=offset)
 
 
 @router.callback_query(F.data == "admin:chats")

@@ -14,7 +14,9 @@ def admin_main_kb(lang: str = "ru"):
     b.button(text="Рассылка" if lang == "ru" else "Broadcast", callback_data="admin:broadcast")
     b.button(text="Реэнгейджмент" if lang == "ru" else "Re-engage", callback_data="admin:reengage")
     b.button(text="В меню" if lang == "ru" else "Menu", callback_data="menu")
-    b.adjust(2, 2, 2, 1, 1)
+    b.button(text="Баны" if lang == "ru" else "Bans", callback_data="admin:bans")
+    b.button(text="Активные чаты" if lang == "ru" else "Active chats", callback_data="admin:active_chats")
+    b.adjust(2, 2, 2, 2, 1, 1)
     return b.as_markup()
 
 
@@ -53,6 +55,7 @@ def admin_chats_kb(
     lang: str = "ru",
     prev_offset: int | None = None,
     next_offset: int | None = None,
+    page_callback_prefix: str = "admin_chats_page",
 ):
     b = InlineKeyboardBuilder()
     for chat_id, is_active in chats:
@@ -77,14 +80,14 @@ def admin_chats_kb(
         nav.append(
             InlineKeyboardButton(
                 text="⬅️ Пред." if lang == "ru" else "⬅️ Prev",
-                callback_data=f"admin_chats_page:{prev_offset}",
+                callback_data=f"{page_callback_prefix}:{prev_offset}",
             )
         )
     if next_offset is not None:
         nav.append(
             InlineKeyboardButton(
                 text="➡️ След." if lang == "ru" else "➡️ Next",
-                callback_data=f"admin_chats_page:{next_offset}",
+                callback_data=f"{page_callback_prefix}:{next_offset}",
             )
         )
     if nav:
@@ -124,4 +127,50 @@ def admin_reports_kb(report_ids: list[int], lang: str = "ru"):
         b.button(text=f"Жалоба {rid}" if lang == "ru" else f"Report {rid}", callback_data=f"admin_report:{rid}")
     b.button(text="⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="admin:back")
     b.adjust(1)
+    return b.as_markup()
+
+
+def admin_bans_kb(
+    user_ids: list[int],
+    lang: str = "ru",
+    prev_offset: int | None = None,
+    next_offset: int | None = None,
+):
+    b = InlineKeyboardBuilder()
+    for uid in user_ids:
+        b.row(
+            InlineKeyboardButton(
+                text=f"Профиль {uid}" if lang == "ru" else f"Profile {uid}",
+                callback_data=f"admin_user_view:{uid}",
+            ),
+            InlineKeyboardButton(
+                text=f"Разбан {uid}" if lang == "ru" else f"Unban {uid}",
+                callback_data=f"admin_user_unban:{uid}",
+            ),
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if prev_offset is not None:
+        nav.append(
+            InlineKeyboardButton(
+                text="⬅️ Пред." if lang == "ru" else "⬅️ Prev",
+                callback_data=f"admin_bans_page:{prev_offset}",
+            )
+        )
+    if next_offset is not None:
+        nav.append(
+            InlineKeyboardButton(
+                text="➡️ След." if lang == "ru" else "➡️ Next",
+                callback_data=f"admin_bans_page:{next_offset}",
+            )
+        )
+    if nav:
+        b.row(*nav)
+
+    b.row(
+        InlineKeyboardButton(
+            text="⬅️ Назад" if lang == "ru" else "⬅️ Back",
+            callback_data="admin:back",
+        )
+    )
     return b.as_markup()
