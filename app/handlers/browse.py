@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -211,9 +213,53 @@ async def browse_set_modes(call: CallbackQuery, state: FSMContext, session: Asyn
     data = await state.get_data()
     filters = data.get("filters") or {}
     selected = filters.get("modes") or []
-    await state.update_data(filters=filters, modes_selected=selected)
-    await call.message.answer("Выбери режимы:", reply_markup=modes_kb("browse_mode", user.language, selected))
+    await state.update_data(filters=filters, modes_selected=selected, modes_query=None)
+    await state.set_state(BrowseFilterStates.modes)
+    sent = await call.message.answer(
+        "Выбери режимы:" if user.language == "ru" else "Choose modes:",
+        reply_markup=modes_kb("browse_mode", user.language, selected),
+    )
+    await state.update_data(modes_msg_id=sent.message_id)
     await safe_answer(call)
+
+
+@router.message(BrowseFilterStates.modes)
+async def browse_modes_search(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    user = await ensure_registered_message(message, session)
+    if not user:
+        return
+    if not message.text:
+        return
+    query = message.text.strip()
+    if not query or query.startswith("/"):
+        return
+
+    if query.casefold() in {"сброс", "очистить", "clear", "reset"}:
+        query = ""
+
+    data = await state.get_data()
+    selected: list[str] = data.get("modes_selected") or []
+    prev_msg_id = data.get("modes_msg_id")
+
+    await state.update_data(modes_query=query or None)
+
+    if prev_msg_id:
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=message.chat.id,
+                message_id=int(prev_msg_id),
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
+    text = "Выбери режимы:" if user.language == "ru" else "Choose modes:"
+    text += f"\n\n🔍 Поиск: <code>{html.escape(query)}</code>" if query else ""
+    sent = await message.answer(
+        text,
+        reply_markup=modes_kb("browse_mode", user.language, selected, query=query or None),
+    )
+    await state.update_data(modes_msg_id=sent.message_id)
 
 
 @router.callback_query(F.data.startswith("browse_mode:"))
@@ -225,10 +271,33 @@ async def browse_modes_pick(call: CallbackQuery, state: FSMContext, session: Asy
     data = await state.get_data()
     filters = data.get("filters") or {}
     selected: list[str] = data.get("modes_selected") or []
+    query = data.get("modes_query")
+
+    await state.update_data(modes_msg_id=call.message.message_id)
+
+    if code == "__noop":
+        await safe_answer(call)
+        return
+
+    if code == "__search":
+        await safe_answer(
+            call,
+            "Напиши название режима сообщением для поиска."
+            if user.language == "ru"
+            else "Type mode name as a message to search.",
+        )
+        return
+
+    if code == "__clear":
+        await state.update_data(modes_query=None)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected, query=None))
+        await safe_answer(call)
+        return
 
     if code == "done":
         filters["modes"] = selected
         await state.update_data(filters=filters, index=0)
+        await state.set_state(None)
         await _show(user.id, session, state, bot, delete_prev=call)
         await safe_answer(call)
         return
@@ -242,7 +311,7 @@ async def browse_modes_pick(call: CallbackQuery, state: FSMContext, session: Asy
         selected.append(code)
 
     await state.update_data(modes_selected=selected)
-    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected))
+    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("browse_mode", user.language, selected, query=query))
     await safe_answer(call)
 
 

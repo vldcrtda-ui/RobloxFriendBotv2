@@ -35,6 +35,7 @@ class RandomChatStates(StatesGroup):
 
 class BrowseFilterStates(StatesGroup):
     age_range = State()
+    modes = State()
 
 
 class BroadcastStates(StatesGroup):

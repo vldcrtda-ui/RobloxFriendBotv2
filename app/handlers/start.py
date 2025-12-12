@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 
 from aiogram import F, Router
@@ -68,7 +69,7 @@ async def reg_age(message: Message, state: FSMContext) -> None:
 @router.callback_query(RegistrationStates.language, F.data.startswith("reg_lang:"))
 async def reg_lang(call: CallbackQuery, state: FSMContext) -> None:
     lang = call.data.split(":")[1]
-    await state.update_data(language=lang, modes=[])
+    await state.update_data(language=lang, modes=[], modes_query=None, modes_msg_id=call.message.message_id)
     await state.set_state(RegistrationStates.modes)
     await safe_edit_text(call.message, t(lang, "ask_modes"), reply_markup=modes_kb("reg_mode", lang, []))
     await safe_answer(call)
@@ -80,6 +81,26 @@ async def reg_modes(call: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     lang = data.get("language", "ru")
     selected: list[str] = data.get("modes", [])
+    query = data.get("modes_query")
+
+    await state.update_data(modes_msg_id=call.message.message_id)
+
+    if code == "__noop":
+        await safe_answer(call)
+        return
+
+    if code == "__search":
+        await safe_answer(
+            call,
+            "Напиши название режима сообщением для поиска." if lang == "ru" else "Type mode name as a message to search.",
+        )
+        return
+
+    if code == "__clear":
+        await state.update_data(modes_query=None)
+        await safe_edit_reply_markup(call.message, reply_markup=modes_kb("reg_mode", lang, selected, query=None))
+        await safe_answer(call)
+        return
 
     if code == "done":
         if not selected:
@@ -99,8 +120,42 @@ async def reg_modes(call: CallbackQuery, state: FSMContext) -> None:
         selected.append(code)
 
     await state.update_data(modes=selected)
-    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("reg_mode", lang, selected))
+    await safe_edit_reply_markup(call.message, reply_markup=modes_kb("reg_mode", lang, selected, query=query))
     await safe_answer(call)
+
+
+@router.message(RegistrationStates.modes)
+async def reg_modes_search(message: Message, state: FSMContext) -> None:
+    if not message.text:
+        return
+    query = message.text.strip()
+    if not query or query.startswith("/"):
+        return
+
+    if query.casefold() in {"сброс", "очистить", "clear", "reset"}:
+        query = ""
+
+    data = await state.get_data()
+    lang = data.get("language", "ru")
+    selected: list[str] = data.get("modes", [])
+    prev_msg_id = data.get("modes_msg_id")
+
+    await state.update_data(modes_query=query or None)
+
+    if prev_msg_id:
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=message.chat.id,
+                message_id=int(prev_msg_id),
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
+    text = t(lang, "ask_modes")
+    text += f"\n\n🔍 Поиск: <code>{html.escape(query)}</code>" if query else ""
+    sent = await message.answer(text, reply_markup=modes_kb("reg_mode", lang, selected, query=query or None))
+    await state.update_data(modes_msg_id=sent.message_id)
 
 
 @router.message(RegistrationStates.bio)
