@@ -232,7 +232,7 @@ async def games_cmd(message: Message) -> None:
     if not games or total == 0:
         await message.answer("Список игр пуст.")
         return
-    lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games]
+    lines = [f"- {g['code']}: {games_service.label(str(g['code']), 'ru')} / {g['name_en']}" for g in games]
     lines.append(f"\nПоказано: {len(games)} из {total}.")
     lines.append("\nДобавить: /games_add &lt;code&gt; &lt;name_ru&gt; | &lt;name_en&gt;")
     lines.append("Удалить: /games_remove &lt;code&gt;")

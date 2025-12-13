@@ -602,7 +602,7 @@ async def admin_games(call: CallbackQuery, session: AsyncSession) -> None:
     if not games or total == 0:
         text = "Список игр пуст."
     else:
-        lines = [f"- {g['code']}: {g['name_ru']} / {g['name_en']}" for g in games]
+        lines = [f"- {g['code']}: {games_service.label(str(g['code']), 'ru')} / {g['name_en']}" for g in games]
         suffix = f"\n\nПоказано: {len(games)} из {total}."
         text = "Игры/режимы (топ по популярности):\n" + "\n".join(lines) + suffix
     lang = await _admin_lang(session, call.from_user.id)

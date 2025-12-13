@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from app.services.games import games_service
+from app.services.games import games_service, _rusify_mixed_text
 from app.utils.i18n import t
 
 _PAGE_SIZE = 20
@@ -30,7 +30,7 @@ def modes_kb(prefix: str, lang: str, selected: list[str], query: str | None = No
 
     for code in selected:
         game = games_service.get(code) or {"code": code, "name_ru": code, "name_en": code}
-        label = game.get("name_en") if lang == "en" else game.get("name_ru")
+        label = game.get("name_en") if lang == "en" else _rusify_mixed_text(str(game.get("name_ru") or code))
         b.button(text=f"✅ {label}", callback_data=f"{prefix}:{code}")
 
     if query:
@@ -46,7 +46,7 @@ def modes_kb(prefix: str, lang: str, selected: list[str], query: str | None = No
 
         for game in page_items:
             code = str(game.get("code") or "")
-            label = game.get("name_en") if lang == "en" else game.get("name_ru")
+            label = game.get("name_en") if lang == "en" else _rusify_mixed_text(str(game.get("name_ru") or code))
             b.button(text=str(label), callback_data=f"{prefix}:{code}")
 
         if page > 0:
@@ -74,4 +74,3 @@ def confirm_kb(yes_cb: str, no_cb: str, lang: str, yes_text: str | None = None, 
     b.button(text=no_text or ("Нет" if lang == "ru" else "No"), callback_data=no_cb)
     b.adjust(2)
     return b.as_markup()
-
