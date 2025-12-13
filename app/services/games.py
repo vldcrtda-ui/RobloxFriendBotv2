@@ -61,7 +61,74 @@ _RU_TO_LAT = {
     "я": "ya",
 }
 
-MDBX_SCHEMA_VERSION = 2
+_LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9']*")
+
+_RU_WORD_MAP = {
+    "tycoon": "\u0442\u0430\u0439\u043a\u0443\u043d",
+    "simulator": "\u0441\u0438\u043c\u0443\u043b\u044f\u0442\u043e\u0440",
+    "obby": "\u043e\u0431\u0431\u0438",
+    "escape": "\u043f\u043e\u0431\u0435\u0433",
+    "tower": "\u0431\u0430\u0448\u043d\u044f",
+    "world": "\u043c\u0438\u0440",
+    "mansion": "\u043e\u0441\u043e\u0431\u043d\u044f\u043a",
+    "brainrot": "\u0431\u0440\u0435\u0439\u043d\u0440\u043e\u0442",
+    "clicker": "\u043a\u043b\u0438\u043a\u0435\u0440",
+    "parkour": "\u043f\u0430\u0440\u043a\u0443\u0440",
+    "race": "\u0433\u043e\u043d\u043a\u0430",
+    "run": "\u0431\u0435\u0433",
+    "battle": "\u0431\u0438\u0442\u0432\u0430",
+    "fight": "\u0431\u043e\u0439",
+    "survival": "\u0432\u044b\u0436\u0438\u0432\u0430\u043d\u0438\u0435",
+    "horror": "\u0445\u043e\u0440\u0440\u043e\u0440",
+    "story": "\u0438\u0441\u0442\u043e\u0440\u0438\u044f",
+    "rp": "\u0440\u043f",
+}
+
+_RU_DIGRAPHS = [
+    ("sch", "\u0449"),
+    ("sh", "\u0448"),
+    ("ch", "\u0447"),
+    ("zh", "\u0436"),
+    ("kh", "\u0445"),
+    ("ts", "\u0446"),
+    ("yu", "\u044e"),
+    ("ya", "\u044f"),
+    ("yo", "\u0451"),
+    ("ph", "\u0444"),
+    ("th", "\u0442"),
+    ("qu", "\u043a\u0432"),
+]
+
+_RU_CHAR_MAP = {
+    "a": "\u0430",
+    "b": "\u0431",
+    "c": "\u043a",
+    "d": "\u0434",
+    "e": "\u0435",
+    "f": "\u0444",
+    "g": "\u0433",
+    "h": "\u0445",
+    "i": "\u0438",
+    "j": "\u0434\u0436",
+    "k": "\u043a",
+    "l": "\u043b",
+    "m": "\u043c",
+    "n": "\u043d",
+    "o": "\u043e",
+    "p": "\u043f",
+    "q": "\u043a",
+    "r": "\u0440",
+    "s": "\u0441",
+    "t": "\u0442",
+    "u": "\u0443",
+    "v": "\u0432",
+    "w": "\u0432",
+    "x": "\u043a\u0441",
+    "y": "\u0439",
+    "z": "\u0437",
+}
+
+MDBX_SCHEMA_VERSION = 3
 MDBX_MAP_META = b"meta"
 MDBX_MAP_GAMES = b"games"
 MDBX_MAP_ORDER = b"order"  # rank(u32be) -> code(bytes)
@@ -89,6 +156,7 @@ def _query_variants(query: str | None) -> list[str]:
         raw,
         raw.translate(_RU_TO_EN),
         raw.translate(_EN_TO_RU),
+        _rusify_mixed_text(raw),
         _translit_ru_to_lat(raw),
         _translit_ru_to_lat(raw.translate(_RU_TO_EN)),
     ]
@@ -100,20 +168,67 @@ def _query_variants(query: str | None) -> list[str]:
     return out
 
 
+def _preserve_case(src: str, replacement: str) -> str:
+    if not src:
+        return replacement
+    if src.isupper():
+        return replacement.upper()
+    if src[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def _translit_en_to_ru(word: str) -> str:
+    w = (word or "").casefold()
+    out: list[str] = []
+    i = 0
+    while i < len(w):
+        matched = False
+        for pat, rep in _RU_DIGRAPHS:
+            if w.startswith(pat, i):
+                out.append(rep)
+                i += len(pat)
+                matched = True
+                break
+        if matched:
+            continue
+        ch = w[i]
+        out.append(_RU_CHAR_MAP.get(ch, ch))
+        i += 1
+    return "".join(out)
+
+
+def _rusify_mixed_text(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        word = match.group(0)
+        mapped = _RU_WORD_MAP.get(word.casefold())
+        replacement = mapped if mapped is not None else _translit_en_to_ru(word)
+        return _preserve_case(word, replacement)
+
+    return _LATIN_WORD_RE.sub(repl, text or "")
+
+
 def _game_match_score(game: dict, query_variants: list[str]) -> float:
     code = str(game.get("code") or "")
     name_ru = str(game.get("name_ru") or "")
     name_en = str(game.get("name_en") or "")
 
-    hay = _norm(f"{code} {name_ru} {name_en}")
+    rus_ru = _rusify_mixed_text(name_ru)
+    rus_en = _rusify_mixed_text(name_en)
+
+    hay = _norm(f"{code} {name_ru} {name_en} {rus_ru} {rus_en}")
     hay_lat = _norm(_translit_ru_to_lat(hay))
 
     targets = [
         _norm(code),
         _norm(name_ru),
         _norm(name_en),
+        _norm(rus_ru),
+        _norm(rus_en),
         _norm(_translit_ru_to_lat(name_ru)),
         _norm(_translit_ru_to_lat(name_en)),
+        _norm(_translit_ru_to_lat(rus_ru)),
+        _norm(_translit_ru_to_lat(rus_en)),
     ]
 
     best = 0.0
@@ -163,12 +278,19 @@ def _iter_tokens_for_game(game: dict) -> set[str]:
     name_ru = str(game.get("name_ru") or "")
     name_en = str(game.get("name_en") or "")
 
+    rus_ru = _rusify_mixed_text(name_ru)
+    rus_en = _rusify_mixed_text(name_en)
+
     token_sources = [
         _norm(code),
         _norm(name_ru),
         _norm(name_en),
+        _norm(rus_ru),
+        _norm(rus_en),
         _norm(_translit_ru_to_lat(name_ru)),
         _norm(_translit_ru_to_lat(name_en)),
+        _norm(_translit_ru_to_lat(rus_ru)),
+        _norm(_translit_ru_to_lat(rus_en)),
     ]
 
     tokens: set[str] = set()
@@ -392,7 +514,8 @@ class GamesService:
         game = self.get(code)
         if not game:
             return code
-        return str(game.get("name_en") if lang == "en" else game.get("name_ru"))
+        name = str(game.get("name_en") if lang == "en" else game.get("name_ru"))
+        return name if lang == "en" else _rusify_mixed_text(name)
 
     def labels(self, codes: list[str], lang: str) -> list[str]:
         return [self.label(c, lang) for c in codes]
@@ -567,4 +690,3 @@ class GamesService:
 
 
 games_service = GamesService()
-
